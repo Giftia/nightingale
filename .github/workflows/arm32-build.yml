@@ -1,64 +1,25 @@
-name: Build Nightingale for armv7
+name: Discover Repository Structure
 
 on:
   # 允许您在 GitHub Actions 页面手动触发此工作流
   workflow_dispatch:
 
-# 在工作流级别定义环境变量
-env:
-  GO_VERSION: '1.21' # 夜莺 v6 通常需要 Go 1.21+
-  GOOS: linux
-  GOARCH: arm
-  GOARM: 7
-
 jobs:
-  build-for-armv7:
+  discover:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout Source Code
         uses: actions/checkout@v4
+        # fetch-depth: 0 确保我们获取了所有历史记录，以防万一
         with:
           fetch-depth: 0
 
-      # 调试步骤：列出仓库的完整目录树，以便在出错时进行分析
-      - name: List Repository Structure for Debugging
-        run: ls -lR
-
-      - name: Setup Go Environment
-        uses: actions/setup-go@v5
-        with:
-          go-version: ${{ env.GO_VERSION }}
-
-      - name: Create vendor directory in the correct module path
-        # 最终修正：使用 'working-directory' 将操作限定在正确的 'cmd/server' 模块目录中
-        working-directory: ./cmd/server
+      - name: Show Current Directory and List Full Structure
+        # 这是唯一重要的步骤。它会打印出我们需要的所有信息。
         run: |
-          go mod tidy
-          go mod vendor
-
-      - name: Patch ibex dependency for 32-bit compatibility
-        # 补丁路径现在指向基于 'cmd/server' 的正确 vendor 目录
-        run: |
-          IBEX_FILE="./cmd/server/vendor/github.com/flashcatcloud/ibex/src/storage/redis.go"
-          echo "Patching ibex redis file at: $IBEX_FILE"
-          sed -i 's/const IDINITIAL = 1 << 32/const IDINITIAL int64 = 1 << 32/' $IBEX_FILE
-          echo "Successfully patched ibex dependency in vendor directory."
-
-      - name: Build Nightingale Binary
-        # 同样，在 'cmd/server' 目录中执行构建
-        working-directory: ./cmd/server
-        run: go build -mod=vendor -ldflags="-s -w" -o ../../n9e-linux-armv7 .
-
-      - name: Prepare Artifact Package for Release
-        run: |
-          mkdir -p package_root
-          mv n9e-linux-armv7 package_root/n9e
-          # 从项目根目录复制 etc/ 配置文件
-          cp -r etc package_root/
-          tar -zcvf n9e-linux-armv7.tar.gz -C package_root .
-
-      - name: Upload Artifact
-        uses: actions/upload-artifact@v4
-        with:
-          name: n9e-linux-armv7-package
-          path: n9e-linux-armv7.tar.gz
+          echo "------------------------------------------"
+          echo "Current working directory is:"
+          pwd
+          echo "------------------------------------------"
+          echo "Full repository file and directory listing:"
+          ls -lR
