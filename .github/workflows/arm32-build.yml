@@ -21,7 +21,6 @@ jobs:
     steps:
       - name: Checkout Source Code
         uses: actions/checkout@v4
-        # fetch-depth: 0 is not strictly needed for build, but good practice
         with:
           fetch-depth: 0
 
@@ -30,36 +29,34 @@ jobs:
         with:
           go-version: ${{ env.GO_VERSION }}
 
-      - name: Download Go Modules
-        run: go mod download
-        
+      - name: Create vendor directory
+        # 这是关键的第一步。它将所有依赖项复制到项目本地的、可写的 ./vendor 目录中
+        run: go mod vendor
+
       - name: Patch ibex dependency for 32-bit compatibility
-        # 这是解决 armv7 编译错误的关键步骤
-        # 我们在编译前直接修改 Go 模块缓存中的依赖源文件
-        # 将 const IDINITIAL = 1 << 32 替换为 const IDINITIAL int64 = 1 << 32
-        # 强制指定常量类型为 int64，以避免在32位系统上发生整型溢出
+        # 现在我们在可写的 ./vendor 目录中进行修改，不会再有权限问题
+        # 路径也是固定的，更加可靠
         run: |
-          IBEX_FILE=$(find $(go env GOPATH)/pkg/mod/github.com/flashcatcloud/ibex@* -type f -name "redis.go")
-          echo "Found ibex redis file at: $IBEX_FILE"
+          IBEX_FILE="./vendor/github.com/flashcatcloud/ibex/src/storage/redis.go"
+          echo "Patching ibex redis file at: $IBEX_FILE"
           sed -i 's/const IDINITIAL = 1 << 32/const IDINITIAL int64 = 1 << 32/' $IBEX_FILE
-          echo "Successfully patched ibex dependency."
+          echo "Successfully patched ibex dependency in vendor directory."
 
       - name: Build Nightingale Binary
-        # 使用 ldflags -s -w 来减小最终二进制文件的大小
-        # 编译目标是 cmd/n9e/main.go
-        run: go build -ldflags="-s -w" -o n9e-linux-armv7 ./cmd/n9e
+        # 在构建时添加 -mod=vendor 标志，告诉Go编译器使用我们修改过的 vendor 目录
+        run: go build -mod=vendor -ldflags="-s -w" -o n9e-linux-armv7 ./cmd/n9e
 
       - name: Prepare Artifact Package
-        # 创建一个发布目录，并将二进制文件、配置文件等一同打包
         run: |
           mkdir -p release/
           mv n9e-linux-armv7 release/
-          cp -r etc/ release/
-          cp -r conf/ release/
-          tar -zcvf n9e-linux-armv7.tar.gz release/
+          # 从项目根目录而不是缓存中复制配置文件
+          cp etc/server.conf release/
+          cp etc/config.toml release/
+          # 确保配置文件和二进制文件在同一目录下
+          tar -zcvf n9e-linux-armv7.tar.gz -C release .
 
       - name: Upload Artifact
-        # 将打包好的 tar.gz 文件作为工作流的产物上传
         uses: actions/upload-artifact@v4
         with:
           name: n9e-linux-armv7-package
