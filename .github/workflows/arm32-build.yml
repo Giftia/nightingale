@@ -10,7 +10,7 @@ on:
 
 # 在工作流级别定义环境变量，方便统一管理
 env:
-  GO_VERSION: '1.21' # 请根据Nightingale v6的要求调整，v6通常需要1.21+
+  GO_VERSION: '1.21' # 夜莺 v6 通常需要 Go 1.21+
   GOOS: linux
   GOARCH: arm
   GOARM: 7
@@ -30,12 +30,9 @@ jobs:
           go-version: ${{ env.GO_VERSION }}
 
       - name: Create vendor directory
-        # 这是关键的第一步。它将所有依赖项复制到项目本地的、可写的 ./vendor 目录中
         run: go mod vendor
 
       - name: Patch ibex dependency for 32-bit compatibility
-        # 现在我们在可写的 ./vendor 目录中进行修改，不会再有权限问题
-        # 路径也是固定的，更加可靠
         run: |
           IBEX_FILE="./vendor/github.com/flashcatcloud/ibex/src/storage/redis.go"
           echo "Patching ibex redis file at: $IBEX_FILE"
@@ -43,18 +40,22 @@ jobs:
           echo "Successfully patched ibex dependency in vendor directory."
 
       - name: Build Nightingale Binary
-        # 在构建时添加 -mod=vendor 标志，告诉Go编译器使用我们修改过的 vendor 目录
-        run: go build -mod=vendor -ldflags="-s -w" -o n9e-linux-armv7 ./cmd/n9e
+        # 这是修正后的关键步骤：
+        # 将编译路径从 "./cmd/n9e" 改为 "."，即项目根目录。
+        run: go build -mod=vendor -ldflags="-s -w" -o n9e-linux-armv7 .
 
-      - name: Prepare Artifact Package
+      - name: Prepare Artifact Package for Release
+        # 优化打包流程，使产物结构更清晰
         run: |
-          mkdir -p release/
-          mv n9e-linux-armv7 release/
-          # 从项目根目录而不是缓存中复制配置文件
-          cp etc/server.conf release/
-          cp etc/config.toml release/
-          # 确保配置文件和二进制文件在同一目录下
-          tar -zcvf n9e-linux-armv7.tar.gz -C release .
+          # 1. 创建一个用于打包的临时目录
+          mkdir -p package_root
+          # 2. 将编译好的二进制文件移动到打包目录，并重命名为标准的 'n9e'
+          mv n9e-linux-armv7 package_root/n9e
+          # 3. 将配置文件目录完整复制进去
+          cp -r etc package_root/
+          cp -r conf package_root/
+          # 4. 从打包目录的内部创建tar包，这样解压后不会包含顶层目录
+          tar -zcvf n9e-linux-armv7.tar.gz -C package_root .
 
       - name: Upload Artifact
         uses: actions/upload-artifact@v4
