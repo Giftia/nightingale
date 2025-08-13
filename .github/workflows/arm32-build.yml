@@ -38,80 +38,17 @@ jobs:
           go-version: ${{ steps.gov.outputs.go_version }}
 
       # ===== 插入点：在这里开始补丁步骤（必须在 go 已安装之后） =====
-      - name: Patch ibex for armv7 (conservative, safe)
-        id: patch_ibex
+      - name: Locate and fix IDINITIAL overflow
         run: |
-          set -euo pipefail
-
-          TMP=/tmp/ibex
-          TARGET_ROOT="$GITHUB_WORKSPACE/third_party/ibex"
-
-          # cleanup and fresh clone
-          rm -rf "$TMP" "$TARGET_ROOT"
-          git clone --depth 1 https://github.com/flashcatcloud/ibex.git "$TMP" || (echo "clone failed"; exit 1)
-          cd "$TMP"
-          # optional: checkout specific tag/commit
-          # git checkout v1.3.5 || true
-
-          # locate module root (where go.mod is), then copy that subtree cleanly to target
-          MODFILE=$(find "$TMP" -maxdepth 6 -name go.mod -print -quit || true)
-          if [ -n "$MODFILE" ]; then
-            MODROOT=$(dirname "$MODFILE")
-            echo "Found go.mod at $MODFILE; copying module root $MODROOT to $TARGET_ROOT"
-            mkdir -p "$(dirname "$TARGET_ROOT")"
-            rsync -a --exclude '.git' "$MODROOT"/ "$TARGET_ROOT"/ || { echo "rsync failed"; exit 1; }
+          echo "Searching for zz_idinitial_fix.go..."
+          FOUND_FILE=$(find . -type f -name 'zz_idinitial_fix.go' | head -n 1 || true)
+          if [ -n "$FOUND_FILE" ]; then
+            echo "Found: $FOUND_FILE"
+            # 自动替换 4294967296 为 int64 常量
+            sed -i 's/IDINITIAL[[:space:]]*=[[:space:]]*4294967296/IDINITIAL int64 = 4294967296/' "$FOUND_FILE"
           else
-            # fallback: if no go.mod, try copy src/ or whole repo
-            if [ -d "$TMP/src" ]; then
-              echo "No go.mod found; copying src/ to $TARGET_ROOT"
-              mkdir -p "$TARGET_ROOT"
-              rsync -a --exclude '.git' "$TMP/src"/ "$TARGET_ROOT"/ || { echo "rsync failed"; exit 1; }
-            else
-              echo "No go.mod and no src/; copying entire repo"
-              mkdir -p "$TARGET_ROOT"
-              rsync -a --exclude '.git' "$TMP"/ "$TARGET_ROOT"/ || { echo "rsync failed"; exit 1; }
-            fi
+            echo "Not found zz_idinitial_fix.go — maybe the file is generated later."
           fi
-
-          # Ensure storage dir exists
-          mkdir -p "$TARGET_ROOT/src/storage" || true
-
-          # 1) Create a minimal file that *definitively* defines IDINITIAL as a 64-bit constant.
-          #    This avoids touching the rest of the codebase and fixes "undefined: IDINITIAL".
-          printf '%s\n' \
-            'package storage' \
-            '' \
-            '// IDINITIAL: 64-bit sentinel value. Defined explicitly for 32-bit targets.' \
-            'const IDINITIAL int64 = 4294967296' \
-            > "$TARGET_ROOT/src/storage/zz_idinitial_fix.go"
-
-          echo "Wrote $TARGET_ROOT/src/storage/zz_idinitial_fix.go"
-
-          # 2) Wrap plain uses of IDINITIAL in other files as int64(IDINITIAL) (exclude our new file).
-          #    This is conservative: only replaces token IDINITIAL to int64(IDINITIAL) in .go files,
-          #    avoids touching function signatures or other 'int' types.
-          find "$TARGET_ROOT" -type f -name "*.go" ! -name "zz_idinitial_fix.go" -print0 \
-            | xargs -0 -n1 perl -0777 -i -pe 's/\bIDINITIAL\b/int64(IDINITIAL)/gms' || true
-
-          # 3) Ensure go.mod exists in TARGET_ROOT; initialize minimal one if missing
-          if [ ! -f "$TARGET_ROOT/go.mod" ]; then
-            echo "Initializing minimal go.mod at $TARGET_ROOT"
-            printf '%s\n' "module github.com/flashcatcloud/ibex" "" "go 1.21" > "$TARGET_ROOT/go.mod"
-          fi
-
-          # 4) Run tidy in workspace (non-fatal)
-          cd "$GITHUB_WORKSPACE"
-          go mod tidy || echo "go mod tidy returned non-zero (continuing)"
-
-          echo "Conservative patch step finished; patched module at $TARGET_ROOT"
-
-      - name: Replace module to use patched local ibex
-        run: |
-          set -euo pipefail
-          cd "$GITHUB_WORKSPACE"
-          go mod edit -replace=github.com/flashcatcloud/ibex=./third_party/ibex
-          go mod tidy || true
-
       # ===== 补丁步骤结束 =====
 
       - name: Install cross compile toolchain (for CGO or linking if needed)
