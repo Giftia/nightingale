@@ -3,8 +3,8 @@ name: Build Nightingale (linux/armv7)
 on:
   push:
     branches:
-      - '**'    # push 到任意分支都会触发，必要时改为特定分支或 tag
-  workflow_dispatch: {}  # 支持手动触发
+      - '**'
+  workflow_dispatch: {}
 
 jobs:
   build-armv7:
@@ -37,23 +37,45 @@ jobs:
         with:
           go-version: ${{ steps.gov.outputs.go_version }}
 
+      # ===== 插入点：在这里开始补丁步骤（必须在 go 已安装之后） =====
+      - name: Patch ibex for armv7 (clone + apply simple patch)
+        id: patch_ibex
+        run: |
+          set -euo pipefail
+          echo "Cloning upstream ibex module..."
+          TMP=/tmp/ibex
+          rm -rf $TMP
+          git clone --depth 1 https://github.com/flashcatcloud/ibex.git $TMP || (echo "clone failed"; exit 1)
+          cd $TMP
+          # 可改为具体 tag（如果你知道版本），例如 git checkout v1.3.5
+          # git checkout v1.3.5 || true
+
+          # 对 storage/redis.go 应用最小补丁：把未指明类型的大常量变为带类型常量（示例）
+          # 注意：这只是 CI 临时补丁，长期应在 ibex 上做系统性修改或在本地 fork 并 PR
+          if [ -f src/storage/redis.go ]; then
+            sed -n '1,120p' src/storage/redis.go || true
+            # 下面这行根据实际源码调整匹配文本；示例将常量改为 uint64 类型
+            perl -0777 -pe "s/const\s+IDINITIAL\s*=\s*4294967296/const IDINITIAL uint64 = 4294967296/ms" -i src/storage/redis.go || true
+          else
+            echo "warning: src/storage/redis.go not found; adjust patch path as needed"
+          fi
+
+          # 将 patched module 复制到仓库内的 third_party/ibex
+          mkdir -p $GITHUB_WORKSPACE/third_party
+          rsync -a --exclude '.git' $TMP $GITHUB_WORKSPACE/third_party/ibex
+
+      - name: Replace module to use patched local ibex
+        run: |
+          # 使用相对路径替换依赖，使后续 go build 使用我们刚复制的模块
+          go mod edit -replace=github.com/flashcatcloud/ibex=./third_party/ibex
+          # 更新 go.sum（可选，但推荐）
+          go mod tidy
+      # ===== 补丁步骤结束 =====
+
       - name: Install cross compile toolchain (for CGO or linking if needed)
         run: |
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends build-essential gcc-arm-linux-gnueabihf
-
-      - name: Patch ibex ID type for armv7
-        run: |
-          git clone https://github.com/flashcatcloud/ibex /tmp/ibex
-          cd /tmp/ibex
-          git checkout v1.3.5   # 或相应版本
-          # 下面只是示例替换（请根据实际源码调整）
-          sed -i 's/const IDINITIAL = 4294967296/const IDINITIAL uint64 = 4294967296/' src/storage/redis.go
-          # copy patched module into repo and use local replace
-          cp -r /tmp/ibex $GITHUB_WORKSPACE/third_party/ibex
-      - name: go mod edit replace
-        run: go mod edit -replace=github.com/flashcatcloud/ibex=./third_party/ibex
-
 
       - name: Prepare dist directory
         run: mkdir -p dist
@@ -61,14 +83,11 @@ jobs:
       - name: Detect commands under ./cmd and build for linux/arm (armv7)
         run: |
           set -euo pipefail
-          echo "Building for linux/arm (GOARM=7)"
-          # disable CGO by default for simpler static-like builds; change CGO_ENABLED=1 below if needed
           export GOOS=linux
           export GOARCH=arm
           export GOARM=7
           export CGO_ENABLED=0
 
-          # If repository has multiple cmd/* binaries, build all; otherwise fallback to single target
           if [ -d "./cmd" ]; then
             for d in ./cmd/*; do
               if [ -d "$d" ]; then
@@ -79,7 +98,6 @@ jobs:
               fi
             done
           else
-            # fallback: try to build main package
             go build -v -o "dist/n9e-linux-armv7" ./... || { echo "fallback build failed"; exit 1; }
             file "dist/n9e-linux-armv7"
           fi
