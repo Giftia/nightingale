@@ -1,0 +1,81 @@
+name: Build Nightingale (linux/armv7)
+
+on:
+  push:
+    branches:
+      - '**'    # push 到任意分支都会触发，必要时改为特定分支或 tag
+  workflow_dispatch: {}  # 支持手动触发
+
+jobs:
+  build-armv7:
+    runs-on: ubuntu-latest
+    env:
+      GO111MODULE: on
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Determine go version from go.mod (if exists)
+        id: gov
+        run: |
+          if [ -f go.mod ]; then
+            gv=$(grep '^go ' go.mod | awk '{print $2}' || true)
+            if [ -n "$gv" ]; then
+              echo "go_version=$gv" >> $GITHUB_OUTPUT
+            else
+              echo "go_version=1.21" >> $GITHUB_OUTPUT
+            fi
+          else
+            echo "go_version=1.21" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Set up Go
+        uses: actions/setup-go@v4
+        with:
+          go-version: ${{ steps.gov.outputs.go_version }}
+
+      - name: Install cross compile toolchain (for CGO or linking if needed)
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends build-essential gcc-arm-linux-gnueabihf
+
+      - name: Prepare dist directory
+        run: mkdir -p dist
+
+      - name: Detect commands under ./cmd and build for linux/arm (armv7)
+        run: |
+          set -euo pipefail
+          echo "Building for linux/arm (GOARM=7)"
+          # disable CGO by default for simpler static-like builds; change CGO_ENABLED=1 below if needed
+          export GOOS=linux
+          export GOARCH=arm
+          export GOARM=7
+          export CGO_ENABLED=0
+
+          # If repository has multiple cmd/* binaries, build all; otherwise fallback to single target
+          if [ -d "./cmd" ]; then
+            for d in ./cmd/*; do
+              if [ -d "$d" ]; then
+                name=$(basename "$d")
+                echo "Building $name ..."
+                go build -v -o "dist/${name}-linux-armv7" "./cmd/${name}" || { echo "build ${name} failed"; exit 1; }
+                file "dist/${name}-linux-armv7"
+              fi
+            done
+          else
+            # fallback: try to build main package
+            go build -v -o "dist/n9e-linux-armv7" ./... || { echo "fallback build failed"; exit 1; }
+            file "dist/n9e-linux-armv7"
+          fi
+
+      - name: List dist
+        run: ls -la dist || true
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: nightingale-armv7
+          path: dist/**
