@@ -1,25 +1,61 @@
-name: Discover Repository Structure
+name: Build Nightingale for armv7
 
 on:
   # 允许您在 GitHub Actions 页面手动触发此工作流
   workflow_dispatch:
 
+# 在工作流级别定义环境变量
+env:
+  GO_VERSION: '1.21' # 夜莺 v6 通常需要 Go 1.21+
+  GOOS: linux
+  GOARCH: arm
+  GOARM: 7
+
 jobs:
-  discover:
+  build-for-armv7:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout Source Code
         uses: actions/checkout@v4
-        # fetch-depth: 0 确保我们获取了所有历史记录，以防万一
         with:
           fetch-depth: 0
 
-      - name: Show Current Directory and List Full Structure
-        # 这是唯一重要的步骤。它会打印出我们需要的所有信息。
+      - name: Setup Go Environment
+        uses: actions/setup-go@v5
+        with:
+          go-version: ${{ env.GO_VERSION }}
+
+      - name: Create vendor directory from project root
+        # 因为是单模块项目，所以在根目录执行 vendor 即可
+        run: go mod vendor
+
+      - name: Patch ibex dependency for 32-bit compatibility
+        # 路径现在是基于根目录的 vendor 文件夹，这是正确的
         run: |
-          echo "------------------------------------------"
-          echo "Current working directory is:"
-          pwd
-          echo "------------------------------------------"
-          echo "Full repository file and directory listing:"
-          ls -lR
+          IBEX_FILE="./vendor/github.com/flashcatcloud/ibex/src/storage/redis.go"
+          echo "Patching ibex redis file at: $IBEX_FILE"
+          sed -i 's/const IDINITIAL = 1 << 32/const IDINITIAL int64 = 1 << 32/' $IBEX_FILE
+          echo "Successfully patched ibex dependency in vendor directory."
+
+      - name: Build Nightingale Center Binary
+        # 这是最终正确的构建命令：
+        # - 从根目录执行
+        # - 使用 -mod=vendor
+        # - 编译目标是 ./cmd/center
+        # - 将输出文件命名为 n9e (nightingale executive)
+        run: go build -mod=vendor -ldflags="-s -w" -o n9e-linux-armv7 ./cmd/center
+
+      - name: Prepare Artifact Package for Release
+        # 这个打包逻辑现在也是正确的
+        run: |
+          mkdir -p package_root
+          mv n9e-linux-armv7 package_root/n9e
+          # 从项目根目录复制 etc/ 配置文件
+          cp -r etc package_root/
+          tar -zcvf n9e-linux-armv7.tar.gz -C package_root .
+
+      - name: Upload Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: n9e-linux-armv7-package
+          path: n9e-linux-armv7.tar.gz
