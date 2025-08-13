@@ -42,6 +42,19 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends build-essential gcc-arm-linux-gnueabihf
 
+      - name: Patch ibex ID type for armv7
+        run: |
+          git clone https://github.com/flashcatcloud/ibex /tmp/ibex
+          cd /tmp/ibex
+          git checkout v1.3.5   # 或相应版本
+          # 下面只是示例替换（请根据实际源码调整）
+          sed -i 's/const IDINITIAL = 4294967296/const IDINITIAL uint64 = 4294967296/' src/storage/redis.go
+          # copy patched module into repo and use local replace
+          cp -r /tmp/ibex $GITHUB_WORKSPACE/third_party/ibex
+      - name: go mod edit replace
+        run: go mod edit -replace=github.com/flashcatcloud/ibex=./third_party/ibex
+
+
       - name: Prepare dist directory
         run: mkdir -p dist
 
