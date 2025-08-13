@@ -29,32 +29,42 @@ jobs:
         with:
           go-version: ${{ env.GO_VERSION }}
 
-      - name: Create vendor directory
-        run: go mod vendor
+      - name: Create vendor directory in the correct module path
+        # 这是核心修正：进入正确的子模块目录 src/n9e 再执行 go mod vendor
+        run: |
+          cd src/n9e
+          go mod tidy
+          go mod vendor
 
       - name: Patch ibex dependency for 32-bit compatibility
+        # 补丁路径也相应地更新
         run: |
-          IBEX_FILE="./vendor/github.com/flashcatcloud/ibex/src/storage/redis.go"
+          IBEX_FILE="./src/n9e/vendor/github.com/flashcatcloud/ibex/src/storage/redis.go"
           echo "Patching ibex redis file at: $IBEX_FILE"
           sed -i 's/const IDINITIAL = 1 << 32/const IDINITIAL int64 = 1 << 32/' $IBEX_FILE
           echo "Successfully patched ibex dependency in vendor directory."
 
-      - name: Build Nightingale Binary
-        # 这是修正后的关键步骤：
-        # 将编译路径从 "./cmd/n9e" 改为 "."，即项目根目录。
-        run: go build -mod=vendor -ldflags="-s -w" -o n9e-linux-armv7 .
+      - name: Build Nightingale Binary in the correct directory
+        # 这是另一个核心修正：
+        # 1. cd 到 src/n9e 目录
+        # 2. 在该目录下执行 go build
+        # 3. 将输出文件直接放在项目根目录，方便后续打包
+        run: |
+          cd src/n9e
+          go build -mod=vendor -ldflags="-s -w" -o ../../n9e-linux-armv7 .
 
       - name: Prepare Artifact Package for Release
-        # 优化打包流程，使产物结构更清晰
+        # 打包逻辑现在基于项目根目录，因为二进制文件已输出到此处
         run: |
-          # 1. 创建一个用于打包的临时目录
+          # 1. 创建打包目录
           mkdir -p package_root
-          # 2. 将编译好的二进制文件移动到打包目录，并重命名为标准的 'n9e'
+          # 2. 移动二进制文件并重命名
           mv n9e-linux-armv7 package_root/n9e
-          # 3. 将配置文件目录完整复制进去
+          # 3. 复制项目根目录的配置文件
           cp -r etc package_root/
-          cp -r conf package_root/
-          # 4. 从打包目录的内部创建tar包，这样解压后不会包含顶层目录
+          # 注意：v6的配置结构主要是 etc 和 go.work, conf 目录可能不存在或不重要
+          # 我们选择只复制 etc
+          # 4. 创建tar包
           tar -zcvf n9e-linux-armv7.tar.gz -C package_root .
 
       - name: Upload Artifact
