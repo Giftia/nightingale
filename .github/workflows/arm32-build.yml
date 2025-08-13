@@ -3,12 +3,8 @@ name: Build Nightingale for armv7
 on:
   # 允许您在 GitHub Actions 页面手动触发此工作流
   workflow_dispatch:
-  # 您也可以设置为在推送到特定分支时自动触发
-  # push:
-  #   branches:
-  #     - main
 
-# 在工作流级别定义环境变量，方便统一管理
+# 在工作流级别定义环境变量
 env:
   GO_VERSION: '1.21' # 夜莺 v6 通常需要 Go 1.21+
   GOOS: linux
@@ -24,38 +20,40 @@ jobs:
         with:
           fetch-depth: 0
 
+      # 调试步骤：列出仓库的完整目录树，以便在出错时进行分析
+      - name: List Repository Structure for Debugging
+        run: ls -lR
+
       - name: Setup Go Environment
         uses: actions/setup-go@v5
         with:
           go-version: ${{ env.GO_VERSION }}
 
       - name: Create vendor directory in the correct module path
-        # 核心修正：回到正确的子模块目录 cmd/n9e 再执行 go mod vendor
+        # 最终修正：使用 'working-directory' 将操作限定在正确的 'cmd/server' 模块目录中
+        working-directory: ./cmd/server
         run: |
-          cd cmd/n9e
           go mod tidy
           go mod vendor
 
       - name: Patch ibex dependency for 32-bit compatibility
-        # 补丁路径也相应地更新为正确的路径
+        # 补丁路径现在指向基于 'cmd/server' 的正确 vendor 目录
         run: |
-          IBEX_FILE="./cmd/n9e/vendor/github.com/flashcatcloud/ibex/src/storage/redis.go"
+          IBEX_FILE="./cmd/server/vendor/github.com/flashcatcloud/ibex/src/storage/redis.go"
           echo "Patching ibex redis file at: $IBEX_FILE"
           sed -i 's/const IDINITIAL = 1 << 32/const IDINITIAL int64 = 1 << 32/' $IBEX_FILE
           echo "Successfully patched ibex dependency in vendor directory."
 
-      - name: Build Nightingale Binary in the correct directory
-        # 构建命令也回到正确的目录
-        run: |
-          cd cmd/n9e
-          go build -mod=vendor -ldflags="-s -w" -o ../../n9e-linux-armv7 .
+      - name: Build Nightingale Binary
+        # 同样，在 'cmd/server' 目录中执行构建
+        working-directory: ./cmd/server
+        run: go build -mod=vendor -ldflags="-s -w" -o ../../n9e-linux-armv7 .
 
       - name: Prepare Artifact Package for Release
-        # 打包逻辑基于项目根目录，因为二进制文件已输出到此处
         run: |
           mkdir -p package_root
           mv n9e-linux-armv7 package_root/n9e
-          # 复制项目根目录的配置文件
+          # 从项目根目录复制 etc/ 配置文件
           cp -r etc package_root/
           tar -zcvf n9e-linux-armv7.tar.gz -C package_root .
 
