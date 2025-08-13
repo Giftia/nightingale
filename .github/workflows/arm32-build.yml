@@ -38,37 +38,50 @@ jobs:
           go-version: ${{ steps.gov.outputs.go_version }}
 
       # ===== 插入点：在这里开始补丁步骤（必须在 go 已安装之后） =====
-      - name: Patch ibex for armv7 (clone + apply simple patch)
+      - name: Patch ibex for armv7 (robust)
         id: patch_ibex
         run: |
           set -euo pipefail
-          echo "Cloning upstream ibex module..."
           TMP=/tmp/ibex
           rm -rf $TMP
           git clone --depth 1 https://github.com/flashcatcloud/ibex.git $TMP || (echo "clone failed"; exit 1)
           cd $TMP
-          # 可改为具体 tag（如果你知道版本），例如 git checkout v1.3.5
+          # 可选：切到需要的 tag 或 commit
           # git checkout v1.3.5 || true
 
-          # 对 storage/redis.go 应用最小补丁：把未指明类型的大常量变为带类型常量（示例）
-          # 注意：这只是 CI 临时补丁，长期应在 ibex 上做系统性修改或在本地 fork 并 PR
+          # 应用临时补丁（根据实际源码路径调整）
           if [ -f src/storage/redis.go ]; then
-            sed -n '1,120p' src/storage/redis.go || true
-            # 下面这行根据实际源码调整匹配文本；示例将常量改为 uint64 类型
             perl -0777 -pe "s/const\s+IDINITIAL\s*=\s*4294967296/const IDINITIAL uint64 = 4294967296/ms" -i src/storage/redis.go || true
-          else
-            echo "warning: src/storage/redis.go not found; adjust patch path as needed"
           fi
 
-          # 将 patched module 复制到仓库内的 third_party/ibex
-          mkdir -p $GITHUB_WORKSPACE/third_party
-          rsync -a --exclude '.git' $TMP $GITHUB_WORKSPACE/third_party/ibex
+          # 找到模块根（包含 go.mod 的目录），优先深度 3 以内查找
+          MODFILE=$(find . -maxdepth 4 -name go.mod -print -quit || true)
+          if [ -n "$MODFILE" ]; then
+            MODROOT=$(dirname "$MODFILE")
+            echo "Found go.mod at: $MODROOT"
+            rm -rf $GITHUB_WORKSPACE/third_party/ibex
+            mkdir -p $GITHUB_WORKSPACE/third_party/ibex
+            rsync -a --exclude '.git' "$MODROOT"/ $GITHUB_WORKSPACE/third_party/ibex/
+          else
+            # 没有 go.mod，尝试使用 src/ 作为模块根并初始化 go.mod（module 名必须与 import path 一致）
+            if [ -d src ]; then
+              echo "No go.mod found; using src/ as module root and initializing go.mod"
+              rm -rf $GITHUB_WORKSPACE/third_party/ibex
+              mkdir -p $GITHUB_WORKSPACE/third_party/ibex
+              rsync -a --exclude '.git' src/ $GITHUB_WORKSPACE/third_party/ibex/
+              cd $GITHUB_WORKSPACE/third_party/ibex
+              echo "module github.com/flashcatcloud/ibex" > go.mod
+              # 尝试 tidy（可能会打印警告，但保留 go.mod）
+              go mod tidy || true
+            else
+              echo "ERROR: cannot locate go.mod nor src/ in cloned ibex. Aborting."
+              exit 1
+            fi
+          fi
 
       - name: Replace module to use patched local ibex
         run: |
-          # 使用相对路径替换依赖，使后续 go build 使用我们刚复制的模块
           go mod edit -replace=github.com/flashcatcloud/ibex=./third_party/ibex
-          # 更新 go.sum（可选，但推荐）
           go mod tidy
       # ===== 补丁步骤结束 =====
 
