@@ -38,7 +38,7 @@ jobs:
           go-version: ${{ steps.gov.outputs.go_version }}
 
       # ===== 插入点：在这里开始补丁步骤（必须在 go 已安装之后） =====
-      - name: Patch ibex for armv7 (robust - fixed rsync logic)
+      - name: Patch ibex for armv7 (robust - fixed quoting)
         id: patch_ibex
         run: |
           set -euo pipefail
@@ -73,7 +73,7 @@ jobs:
               printf '%s\n' "module github.com/flashcatcloud/ibex" "" "go 1.21" > "$TARGET_ROOT/go.mod"
               (cd "$TARGET_ROOT" && go mod tidy) || true
             else
-              # 兜底：把整个仓库复制过去（不推荐，但保证不会中断 CI）
+              # 兜底：把整个仓库复制过去（保证不会中断 CI）
               echo "No go.mod and no src/ dir; copying full repo to target"
               rm -rf "$TARGET_ROOT"
               mkdir -p "$TARGET_ROOT"
@@ -84,26 +84,38 @@ jobs:
           # 2) 在复制后的目标里应用自动补丁（仅在 TARGET_ROOT 下操作）
           ROOT="$TARGET_ROOT"
           echo "Applying code transformations under $ROOT (best-effort)"
-          # 把 IDINITIAL 改为显式 int64（或 uint64，根据前面决定）
-          find "$ROOT" -type f -name "*.go" -exec perl -0777 -pe \
-            "s/const\s+IDINITIAL\s*=\s*4294967296/const IDINITIAL int64 = 4294967296/gms" -i {} \; || true
 
-          # 尽力把常见函数参数/字段从 int -> int64（保守替换）
-          find "$ROOT" -type f -name "*.go" -print0 | xargs -0 -n1 perl -0777 -i -pe '
-            s{(\([^\)]*?\b)(\w+\s+)int\b}{$1$2int64}gms;
-            s{(\bID\b\s+)int\b}{$1int64}gms;
-            s{(\bId\b\s+)int\b}{$1int64}gms;
-            s{(\bid\b\s+)int\b}{$1int64}gms;
-            s{(\bvar\s+\w+\s+)int\b}{$1int64}gms;
-            ' || true
+          # 使用单引号包裹 perl 表达式，避免与 shell 引号冲突
+          echo "-> patch IDINITIAL constant to explicit int64"
+          find "$ROOT" -type f -name "*.go" -print0 | xargs -0 -n1 perl -0777 -i -pe 's/const\s+IDINITIAL\s*=\s*4294967296/const IDINITIAL int64 = 4294967296/gms' || true
 
-          # 把直接使用 IDINITIAL 的调用包装为 int64(IDINITIAL)
-          find "$ROOT" -type f -name "*.go" -exec perl -0777 -pe 's/\bIDINITIAL\b/int64(IDINITIAL)/gms' -i {} \; || true
+          echo "-> convert common parameter '... int' to '... int64' in parameter lists (conservative)"
+          find "$ROOT" -type f -name "*.go" -print0 | xargs -0 -n1 perl -0777 -i -pe 's{(\([^\)]*?\b)(\w+\s+)int\b}{$1$2int64}gms' || true
+
+          echo "-> convert common ID-like field names 'ID/Id/id' typed as int -> int64 (best-effort)"
+          find "$ROOT" -type f -name "*.go" -print0 | xargs -0 -n1 perl -0777 -i -pe 's{\b(ID|Id|id)\b\s+int\b}{$1 int64}gms' || true
+
+          echo "-> wrap direct uses of IDINITIAL with int64(...)"
+          find "$ROOT" -type f -name "*.go" -print0 | xargs -0 -n1 perl -0777 -i -pe 's/\bIDINITIAL\b/int64(IDINITIAL)/gms' || true
 
           # 3) 确保 target 下存在 go.mod（如果没有，保守初始化）
           if [ ! -f "$ROOT/go.mod" ]; then
             echo "Initializing minimal go.mod at $ROOT"
-            printf '%s\n' "module github.com/flashcatcloud/ibex" "" "go 1.21" > "
+            printf '%s\n' "module github.com/flashcatcloud/ibex" "" "go 1.21" > "$ROOT/go.mod"
+          fi
+
+          # 4) 在工作区运行一次 tidy（允许失败以继续显示后续 build 错误）
+          cd "$GITHUB_WORKSPACE"
+          go mod tidy || echo "go mod tidy returned non-zero (continuing)"
+
+          echo "Patch step completed; patched module available at $TARGET_ROOT"
+
+      - name: Replace module to use patched local ibex
+        run: |
+          set -euo pipefail
+          cd "$GITHUB_WORKSPACE"
+          go mod edit -replace=github.com/flashcatcloud/ibex=./third_party/ibex
+          go mod tidy || true
 
       # ===== 补丁步骤结束 =====
 
