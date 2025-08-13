@@ -49,40 +49,55 @@ jobs:
           # 可选：切到需要的 tag 或 commit
           # git checkout v1.3.5 || true
 
-          # 应用临时补丁（根据实际源码路径调整）
+          # 对 storage/redis.go 应用最小补丁（根据实际源码路径调整）
           if [ -f src/storage/redis.go ]; then
             perl -0777 -pe "s/const\s+IDINITIAL\s*=\s*4294967296/const IDINITIAL uint64 = 4294967296/ms" -i src/storage/redis.go || true
           fi
 
-          # 找到模块根（包含 go.mod 的目录），优先深度 3 以内查找
-          MODFILE=$(find . -maxdepth 4 -name go.mod -print -quit || true)
+          # 将 patched module 复制到仓库内的 third_party/ibex
+          rm -rf $GITHUB_WORKSPACE/third_party/ibex
+          mkdir -p $GITHUB_WORKSPACE/third_party
+          rsync -a --exclude '.git' $TMP $GITHUB_WORKSPACE/third_party/ibex/
+
+          ROOT="$GITHUB_WORKSPACE/third_party/ibex"
+          echo "Patched copy at: $ROOT"
+
+          # 尝试寻找 go.mod（优先查找）
+          MODFILE=$(find "$ROOT" -maxdepth 4 -name go.mod -print -quit || true)
           if [ -n "$MODFILE" ]; then
             MODROOT=$(dirname "$MODFILE")
             echo "Found go.mod at: $MODROOT"
-            rm -rf $GITHUB_WORKSPACE/third_party/ibex
-            mkdir -p $GITHUB_WORKSPACE/third_party/ibex
-            rsync -a --exclude '.git' "$MODROOT"/ $GITHUB_WORKSPACE/third_party/ibex/
+            # 将模块根内容同步到 third_party/ibex 根（覆盖）
+            rm -rf "$ROOT"
+            mkdir -p "$ROOT"
+            rsync -a --exclude '.git' "$TMP/$MODROOT"/ "$ROOT"/
           else
-            # 没有 go.mod，尝试使用 src/ 作为模块根并初始化 go.mod（module 名必须与 import path 一致）
-            if [ -d src ]; then
+            # 没有 go.mod，使用 src/ 作为模块根并初始化 go.mod（module 名必须与 import path 一致）
+            if [ -d "$TMP/src" ]; then
               echo "No go.mod found; using src/ as module root and initializing go.mod"
-              rm -rf $GITHUB_WORKSPACE/third_party/ibex
-              mkdir -p $GITHUB_WORKSPACE/third_party/ibex
-              rsync -a --exclude '.git' src/ $GITHUB_WORKSPACE/third_party/ibex/
-              cd $GITHUB_WORKSPACE/third_party/ibex
-              echo "module github.com/flashcatcloud/ibex" > go.mod
-              # 尝试 tidy（可能会打印警告，但保留 go.mod）
-              go mod tidy || true
+              rm -rf "$ROOT"
+              mkdir -p "$ROOT"
+              rsync -a --exclude '.git' "$TMP/src"/ "$ROOT"/
+              # 使用 printf 而不是 heredoc，避免 YAML 解析问题
+              printf '%s\n' "module github.com/flashcatcloud/ibex" "" "go 1.21" > "$ROOT/go.mod"
+              # 试图 tidy（非致命）
+              (cd "$ROOT" && go mod tidy) || true
             else
               echo "ERROR: cannot locate go.mod nor src/ in cloned ibex. Aborting."
               exit 1
             fi
           fi
 
+          # 在 workspace 根运行一次 tidy（允许失败）
+          cd "$GITHUB_WORKSPACE"
+          go mod tidy || true
+
       - name: Replace module to use patched local ibex
         run: |
+          cd $GITHUB_WORKSPACE
           go mod edit -replace=github.com/flashcatcloud/ibex=./third_party/ibex
-          go mod tidy
+          go mod tidy || true
+
       # ===== 补丁步骤结束 =====
 
       - name: Install cross compile toolchain (for CGO or linking if needed)
