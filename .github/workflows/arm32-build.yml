@@ -55,11 +55,13 @@ jobs:
 
           if [ -d "./cmd" ]; then
             for d in ./cmd/*; do
-              if [ -d "$d" ]; then
+              if [ -d "$d" ] && [ "$(basename "$d")" != "ibex" ]; then
                 name=$(basename "$d")
                 echo "Building $name ..."
                 go build -v -o "dist/${name}-linux-armv7" "./cmd/${name}" || { echo "build ${name} failed"; exit 1; }
                 file "dist/${name}-linux-armv7"
+              else
+                echo "Skipping ibex build"
               fi
             done
           else
